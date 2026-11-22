@@ -105,7 +105,7 @@ function drum(vol = 0.4) {
 }
 
 // ---------- ゲームの状態 ----------
-let state = 'title';       // 'title'（タイトル） / 'play'（プレイ中） / 'over'（ゲームオーバー）
+let state = 'title';       // 'title'（タイトル） / 'play'（プレイ中） / 'pause'（一時停止） / 'over'（ゲームオーバー）
 let score = 0;
 let best = loadBest();
 let time = 0;              // プレイ開始からの秒数
@@ -138,18 +138,61 @@ function resetGame() {
   shotTimer = 0;
 }
 
+// ---------- ボタンの位置と大きさ ----------
+// 左上のメニューボタン
+function menuButton() {
+  return { x: 12, y: safeTop + 8, w: 44, h: 44 };
+}
+// ポーズ中に出る「あきらめる」ボタン（画面の中央）
+function giveUpButton() {
+  return { x: W / 2 - 100, y: H * 0.5, w: 200, h: 56 };
+}
+// 点(x, y)がボタンの四角の中にあるか
+function inside(x, y, b) {
+  return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+}
+
+// ---------- ポーズ・あきらめる ----------
+function pause() {
+  state = 'pause';
+  lastTouch = null;
+  pluck(5, 0.1);
+}
+function resume() {
+  state = 'play';
+  pluck(7, 0.1);
+}
+function giveUp() {
+  if (score > best) { best = score; saveBest(best); }   // その時点の得点でハイスコアを記録
+  state = 'title';
+  drum(0.3);
+}
+
+// ホーム画面に戻ったり電話が来たりしたら、自動で一時停止する
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state === 'play') pause();
+});
+
 // ---------- タッチ操作 ----------
 // 指の「動いた量」だけ忍者を動かす（指で忍者が隠れないように）
 let lastTouch = null;
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
   if (audio && audio.state === 'suspended') audio.resume();
-  if (state !== 'play') {
+  const x = e.clientX, y = e.clientY;
+
+  if (state === 'play') {
+    if (inside(x, y, menuButton())) { pause(); return; }   // メニューボタン → 一時停止
+  } else if (state === 'pause') {
+    if (inside(x, y, giveUpButton())) { giveUp(); return; } // あきらめる → タイトルへ
+    resume();                                               // それ以外の場所 → 再開
+  } else {
+    // タイトル画面・ゲームオーバー画面 → ゲーム開始
     resetGame();
     state = 'play';
     drum();
   }
-  lastTouch = { x: e.clientX, y: e.clientY };
+  lastTouch = { x, y };
 });
 canvas.addEventListener('pointermove', (e) => {
   if (!lastTouch || state !== 'play') return;
@@ -199,6 +242,8 @@ function hit(a, b) {
 //  毎フレームの更新（dt = 前のフレームからの秒数）
 // =====================================================
 function update(dt) {
+  if (state === 'pause') return;   // 一時停止中は何も動かさない
+
   // 桜の花びらは常に動かす
   for (const p of petals) {
     p.y += p.vy * dt;
@@ -440,6 +485,50 @@ function drawItem(it) {
   ctx.restore();
 }
 
+// 角の丸い四角を描く（ボタン用）
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// 左上のメニューボタン（三本線のアイコン）
+function drawMenuButton() {
+  const b = menuButton();
+  roundRect(b.x, b.y, b.w, b.h, 10);
+  ctx.fillStyle = 'rgba(20,18,58,0.7)';
+  ctx.fill();
+  ctx.strokeStyle = '#c9a75a';    // 金色の縁取り
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.strokeStyle = '#fff3c4';
+  ctx.lineWidth = 3;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  for (let i = -1; i <= 1; i++) {
+    const ly = b.y + b.h / 2 + i * 9;
+    ctx.moveTo(b.x + 12, ly);
+    ctx.lineTo(b.x + b.w - 12, ly);
+  }
+  ctx.stroke();
+}
+
+// 「あきらめる」ボタン（朱色）
+function drawGiveUpButton() {
+  const b = giveUpButton();
+  roundRect(b.x, b.y, b.w, b.h, 12);
+  ctx.fillStyle = '#c8323c';
+  ctx.fill();
+  ctx.strokeStyle = '#c9a75a';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  drawText('あきらめる', W / 2, b.y + b.h / 2, 22, '#fff');
+}
+
 function drawText(text, x, y, size, color = '#fff', align = 'center') {
   ctx.font = `bold ${size}px ${FONT}`;
   ctx.textAlign = align;
@@ -453,11 +542,12 @@ function drawText(text, x, y, size, color = '#fff', align = 'center') {
 function draw() {
   drawBackground();
 
-  if (state === 'play' || state === 'over') {
+  const inGame = state === 'play' || state === 'pause';
+  if (inGame || state === 'over') {
     for (const it of items) drawItem(it);
     for (const e of enemies) e.type === 'oni' ? drawOni(e) : drawHitodama(e);
     for (const s of shurikens) drawShuriken(s.x, s.y, s.rot);
-    if (state === 'play') drawPlayer();
+    if (inGame) drawPlayer();
   }
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life);
@@ -465,12 +555,22 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
-  const top = safeTop + 24;
-  if (state === 'play') {
-    // スコアと残り命
-    drawText(`得点 ${score}`, 16, top, 20, '#fff', 'left');
+  const top = safeTop + 30;
+  if (inGame) {
+    // メニューボタン、スコア、残り命
+    drawMenuButton();
+    drawText(`得点 ${score}`, 68, top, 20, '#fff', 'left');
     drawText('命 ' + '●'.repeat(player.lives) + '○'.repeat(Math.max(0, 3 - player.lives)),
              W - 16, top, 18, '#ff8fa8', 'right');
+  }
+
+  if (state === 'pause') {
+    // 画面全体を薄暗くする
+    ctx.fillStyle = 'rgba(0,0,0,0.5)';
+    ctx.fillRect(0, 0, W, H);
+    drawText('一時停止', W / 2, H * 0.36, 40, '#fff');
+    drawGiveUpButton();
+    drawText('ほかの場所をタップで再開', W / 2, H * 0.5 + 100, 16, '#ddd');
   }
 
   if (state === 'title') {
