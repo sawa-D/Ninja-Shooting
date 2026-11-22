@@ -28,6 +28,8 @@
 - 鬼の硬さ：`hp: 4`
 - 命の数：`lives: 3`（上限は `MAX_LIVES = 5`）
 - 天狗の出やすさ：`TENGU_RATE = 0.04`
+- 隠れ身の長さ：`HIDE_MAX = 3`（秒）、回復の速さ：`HIDE_RECOVER = 0.5`
+- 季節ごとの色やルールの説明：`SEASONS`
 - 最初のボスが出る得点：`BOSS_FIRST_SCORE = 1000`
 
 改造してGitHubに上げ直したら、`sw.js` の `oni-taiji-v1` を `v2` に変えると、iPhone側も新しい版に入れ替わります。
