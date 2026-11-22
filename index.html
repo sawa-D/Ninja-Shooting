@@ -121,6 +121,54 @@ function drum(vol = 0.4) {
   osc.start(t); osc.stop(t + 0.4);
 }
 
+// ---------- BGM ----------
+// 曲の一覧。ボス戦を作ったら playBgm('boss') で切り替えられる
+const BGM_FILES = {
+  stage: 'bgm/stage.mp3',   // ゲーム中（bgm1）
+  boss:  'bgm/boss.mp3',    // ボス戦（bgm2）※後で使う
+};
+const BGM_VOLUME = 0.45;    // BGMの音量（0〜1）。効果音が聞こえるよう少し控えめ
+const bgmTracks = {};       // 読み込んだ曲（<audio>要素）
+let bgmGain = null;         // 音量つまみ（iPhoneは<audio>の音量を直接変えられないためWeb Audio経由）
+let currentBgm = null;      // 今流れている曲
+
+for (const name in BGM_FILES) {
+  const el = new Audio(BGM_FILES[name]);
+  el.loop = true;           // 曲の最後まで行ったら最初に戻る
+  el.preload = 'auto';
+  bgmTracks[name] = el;
+}
+
+// 最初のタップのときに、曲を音量つまみにつなぐ
+function connectBgm() {
+  if (bgmGain || !audio) return;
+  bgmGain = audio.createGain();
+  bgmGain.gain.value = BGM_VOLUME;
+  bgmGain.connect(audio.destination);
+  for (const name in bgmTracks) {
+    try { audio.createMediaElementSource(bgmTracks[name]).connect(bgmGain); } catch (e) {}
+  }
+}
+
+// 曲を最初から流す（別の曲が流れていたら止める）
+function playBgm(name) {
+  connectBgm();
+  stopBgm();
+  currentBgm = bgmTracks[name];
+  currentBgm.currentTime = 0;
+  currentBgm.play().catch(() => {});
+}
+// 一時停止・再開（続きから）
+function pauseBgm()  { if (currentBgm) currentBgm.pause(); }
+function resumeBgm() { if (currentBgm) currentBgm.play().catch(() => {}); }
+// 止めて最初に戻す
+function stopBgm() {
+  if (!currentBgm) return;
+  currentBgm.pause();
+  currentBgm.currentTime = 0;
+  currentBgm = null;
+}
+
 // ---------- ゲームの状態 ----------
 let state = 'title';       // 'title'（タイトル） / 'play'（プレイ中） / 'pause'（一時停止） / 'over'（ゲームオーバー）
 let score = 0;
@@ -173,15 +221,18 @@ function inside(x, y, b) {
 function pause() {
   state = 'pause';
   lastTouch = null;
+  pauseBgm();
   pluck(5, 0.1);
 }
 function resume() {
   state = 'play';
+  resumeBgm();
   pluck(7, 0.1);
 }
 function giveUp() {
   if (score > best) { best = score; saveBest(best); }   // その時点の得点でハイスコアを記録
   state = 'title';
+  stopBgm();
   drum(0.3);
 }
 
@@ -208,6 +259,7 @@ canvas.addEventListener('pointerdown', (e) => {
     resetGame();
     state = 'play';
     drum();
+    playBgm('stage');   // ゲーム開始でBGMスタート（iPhoneはタップの中でないと音を出せない）
   }
   lastTouch = { x, y };
 });
@@ -359,6 +411,7 @@ function update(dt) {
         drum(0.6);
         if (player.lives <= 0) {
           state = 'over';
+          stopBgm();
           if (score > best) { best = score; saveBest(best); }
         }
         break;

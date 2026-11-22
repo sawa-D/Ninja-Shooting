@@ -7,6 +7,9 @@
 - `manifest.json` … アプリ名・アイコンなど、ホーム画面アプリとしての設定
 - `sw.js` … オフラインでも遊べるようにする仕組み（Service Worker）
 - `icons/` … アプリのアイコン画像
+- `bgm/stage.mp3` … ゲーム中のBGM（bgm1.wav をmp3に変換し、前後の無音を削ったもの）
+- `bgm/boss.mp3` … ボス戦用BGM（bgm2.mp3 の最後の無音を削ったもの。ボス戦で使う予定）
+- `bgm/bgm1.wav`・`bgm/bgm2.mp3` … 元の音源（GitHubには上げない）
 
 ## PCで試す
 `index.html` をダブルクリックしてブラウザで開けば遊べます（マウスのドラッグで操作）。
