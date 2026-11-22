@@ -48,19 +48,25 @@ const FONT = '"Hiragino Mincho ProN", "Yu Mincho", serif';   // 和風に見え�
 
 // ---------- 画面サイズ ----------
 let W = 0, H = 0;          // 画面の幅と高さ（CSSピクセル）
+let DPR = 1;               // 画面の細かさ（iPhoneは3。1ピクセルを3×3の点で表示している）
 let safeTop = 0;           // iPhoneのノッチ分の余白
 // キャンバスが「実際に画面に表示されている大きさ」を測って、それに合わせて描く。
 // （描く位置とタップを判定する位置を必ず一致させるため）
 function resize() {
   const dpr = window.devicePixelRatio || 1;   // 高解像度画面でもくっきり描く
   const rect = canvas.getBoundingClientRect();
-  if (rect.width === W && rect.height === H) return;   // 変わっていなければ何もしない
+  const cw = Math.round(rect.width * dpr), ch = Math.round(rect.height * dpr);
+  // 大きさも、キャンバスの実際の細かさも変わっていなければ何もしない
+  if (rect.width === W && rect.height === H && dpr === DPR &&
+      canvas.width === cw && canvas.height === ch) return;
   W = rect.width;
   H = rect.height;
-  canvas.width = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  DPR = dpr;
+  canvas.width = cw;
+  canvas.height = ch;
 }
+// iPhoneはメモリが厳しくなるとキャンバスを作り直すことがある。そのときも描き直せるようにする
+canvas.addEventListener('contextrestored', () => { W = 0; bgCache = null; resize(); });
 window.addEventListener('resize', resize);
 resize();
 setInterval(resize, 500);   // iPhoneは起動直後に画面の大きさが変わることがあるので、念のため見張る
@@ -167,68 +173,62 @@ function drum(vol = 0.4) {
 }
 
 // ---------- BGM ----------
-// 曲の一覧。ボス戦を作ったら playBgm('boss') で切り替えられる
+// 曲の一覧。playBgm('boss') のように名前で切り替える
 const BGM_FILES = {
   stage: 'bgm/stage.mp3',   // ゲーム中（bgm1）
-  boss:  'bgm/boss.mp3',    // ボス戦（bgm2）※後で使う
+  boss:  'bgm/boss.mp3',    // ボス戦（bgm2）
 };
-const bgmTracks = {};       // 読み込んだ曲（<audio>要素）
+// iPhoneは「タップした瞬間」でないと新しい音声を鳴らし始められず、同時に鳴らせる音声も基本1つ。
+// そこでBGM用の<audio>を1つだけ用意し、最初のタップで鳴らしておいて、あとは曲を差し替えて使う。
+const bgmEl = new Audio();
+bgmEl.loop = true;          // 曲の最後まで行ったら最初に戻る
+bgmEl.preload = 'auto';
 let bgmGain = null;         // 音量つまみ（iPhoneは<audio>の音量を直接変えられないためWeb Audio経由）
-let currentBgm = null;      // 今流れている曲
+let currentBgm = null;      // 今流している曲の名前（止めているときは null）
+let bgmWanted = false;      // 「今BGMが鳴っているべきか」。鳴っていなければ次のタップで鳴らし直す
 
-for (const name in BGM_FILES) {
-  const el = new Audio(BGM_FILES[name]);
-  el.loop = true;           // 曲の最後まで行ったら最初に戻る
-  el.preload = 'auto';
-  bgmTracks[name] = el;
-}
-
-// 最初のタップのときに、曲を音量つまみにつなぐ
+// 最初のタップのときに、BGMを音量つまみにつなぐ
 function connectBgm() {
   if (bgmGain || !audio) return;
   bgmGain = audio.createGain();
   bgmGain.connect(audio.destination);
   applyVolume();
-  for (const name in bgmTracks) {
-    try { audio.createMediaElementSource(bgmTracks[name]).connect(bgmGain); } catch (e) {}
-  }
+  try { audio.createMediaElementSource(bgmEl).connect(bgmGain); } catch (e) {}
 }
 
-// 曲を最初から流す（別の曲が流れていたら止める）
+// 曲を最初から流す
 function playBgm(name) {
   connectBgm();
-  stopBgm();
-  currentBgm = bgmTracks[name];
-  currentBgm.currentTime = 0;
-  currentBgm.play().catch(() => {});
+  currentBgm = name;
+  const url = new URL(BGM_FILES[name], location.href).href;
+  if (bgmEl.src !== url) bgmEl.src = url;   // 曲を差し替える
+  bgmEl.currentTime = 0;
+  bgmWanted = true;
+  bgmEl.play().catch(() => {});             // 失敗しても、次にタップしたとき鳴らし直す
 }
-// iPhoneは「タップした瞬間」以外に新しい曲を鳴らし始められない。
-// そこでゲーム開始のタップのときに、全部の曲を無音で一瞬だけ再生して「解禁」しておく
-let bgmUnlocked = false;
-function unlockBgm() {
-  if (bgmUnlocked) return;
-  bgmUnlocked = true;
-  for (const name in bgmTracks) {
-    const el = bgmTracks[name];
-    if (el === currentBgm) continue;
-    el.muted = true;
-    el.play().then(() => {
-      el.pause();
-      el.currentTime = 0;
-      el.muted = false;
-    }).catch(() => { el.muted = false; });
-  }
-}
-
 // 一時停止・再開（続きから）
-function pauseBgm()  { if (currentBgm) currentBgm.pause(); }
-function resumeBgm() { if (currentBgm) currentBgm.play().catch(() => {}); }
-// 止めて最初に戻す
-function stopBgm() {
+function pauseBgm() {
+  bgmWanted = false;
+  bgmEl.pause();
+}
+function resumeBgm() {
   if (!currentBgm) return;
-  currentBgm.pause();
-  currentBgm.currentTime = 0;
+  bgmWanted = true;
+  bgmEl.play().catch(() => {});
+}
+// 止める
+function stopBgm() {
+  bgmWanted = false;
   currentBgm = null;
+  bgmEl.pause();
+}
+// 鳴っているべきなのに止まっていたら鳴らし直す（タップのたびに呼ぶ）
+function ensureBgm() {
+  if (bgmWanted && bgmEl.paused) bgmEl.play().catch(() => {});
+}
+// ボス曲を先に読み込んでおく（ボス登場時にすぐ流せるように）
+function prefetchBgm() {
+  for (const name in BGM_FILES) fetch(BGM_FILES[name]).catch(() => {});
 }
 
 // ---------- ゲームの状態 ----------
@@ -406,12 +406,21 @@ document.addEventListener('visibilitychange', () => {
   else if (state === 'pause') pauseBgm();   // 音量画面でBGMを試聴中でも止める
 });
 
+// タップのたびに音の準備を確認する。iPhoneは着信や通知のあと音が止まったままになることがあるため
+function wakeAudio() {
+  initAudio();
+  if (audio && audio.state !== 'running') {
+    const p = audio.resume();
+    if (p && p.catch) p.catch(() => {});
+  }
+  ensureBgm();
+}
+
 // ---------- タッチ操作 ----------
 // 指の「動いた量」だけ忍者を動かす（指で忍者が隠れないように）
 let lastTouch = null;
 canvas.addEventListener('pointerdown', (e) => {
-  initAudio();
-  if (audio && audio.state === 'suspended') audio.resume();
+  wakeAudio();
   const { x, y } = toCanvas(e);
 
   if (state === 'play') {
@@ -427,7 +436,7 @@ canvas.addEventListener('pointerdown', (e) => {
     state = 'play';
     drum();
     playBgm('stage');   // ゲーム開始でBGMスタート（iPhoneはタップの中でないと音を出せない）
-    unlockBgm();        // ボス戦の曲も後で流せるようにしておく
+    prefetchBgm();      // ボス戦の曲を先に読み込んでおく
   }
   lastTouch = { x, y };
 });
@@ -441,7 +450,7 @@ canvas.addEventListener('pointermove', (e) => {
   player.y = Math.max(safeTop + 60, Math.min(H - player.r - 10, player.y));
   lastTouch = p;
 });
-const endTouch = () => { lastTouch = null; };
+const endTouch = () => { lastTouch = null; wakeAudio(); };   // 指を離した瞬間も「タップ」扱いで音を確認
 canvas.addEventListener('pointerup', endTouch);
 canvas.addEventListener('pointercancel', endTouch);
 
@@ -793,25 +802,38 @@ function defeatBoss() {
 // =====================================================
 //  描画
 // =====================================================
-function drawBackground() {
+// 背景（夜空・月・山）は動かないので、一度だけ別のキャンバスに描いておき、毎フレームそれを貼り付ける。
+// 月の「ぼかし」は重い処理なので、毎フレーム描くとiPhoneに負担がかかるため
+let bgCache = null;
+function renderBackground() {
+  const c = document.createElement('canvas');
+  c.width = canvas.width; c.height = canvas.height;
+  const g2 = c.getContext('2d');
+  g2.setTransform(DPR, 0, 0, DPR, 0, 0);
   // 夜空のグラデーション
-  const g = ctx.createLinearGradient(0, 0, 0, H);
+  const g = g2.createLinearGradient(0, 0, 0, H);
   g.addColorStop(0, '#0d0b2e');
   g.addColorStop(1, '#2b1e4f');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
+  g2.fillStyle = g;
+  g2.fillRect(0, 0, W, H);
   // 月
-  ctx.save();
-  ctx.shadowColor = '#fff3c4'; ctx.shadowBlur = 40;
-  ctx.fillStyle = '#fff3c4';
-  ctx.beginPath(); ctx.arc(W * 0.78, H * 0.18, Math.min(W, H) * 0.12, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
+  g2.save();
+  g2.shadowColor = '#fff3c4'; g2.shadowBlur = 40;
+  g2.fillStyle = '#fff3c4';
+  g2.beginPath(); g2.arc(W * 0.78, H * 0.18, Math.min(W, H) * 0.12, 0, Math.PI * 2); g2.fill();
+  g2.restore();
   // 遠くの山（シルエット）
-  ctx.fillStyle = '#1a1338';
-  ctx.beginPath();
-  ctx.moveTo(0, H);
-  for (let x = 0; x <= W; x += 20) ctx.lineTo(x, H * 0.88 - Math.sin(x * 0.012) * 30 - Math.sin(x * 0.031) * 15);
-  ctx.lineTo(W, H); ctx.fill();
+  g2.fillStyle = '#1a1338';
+  g2.beginPath();
+  g2.moveTo(0, H);
+  for (let x = 0; x <= W; x += 20) g2.lineTo(x, H * 0.88 - Math.sin(x * 0.012) * 30 - Math.sin(x * 0.031) * 15);
+  g2.lineTo(W, H); g2.fill();
+  bgCache = { canvas: c, w: c.width, h: c.height };
+}
+
+function drawBackground() {
+  if (!bgCache || bgCache.w !== canvas.width || bgCache.h !== canvas.height) renderBackground();
+  ctx.drawImage(bgCache.canvas, 0, 0, W, H);
   // 桜の花びら
   for (const p of petals) drawPetal(p.x, p.y, p.size, p.rot, 'rgba(255,183,205,0.8)');
 }
@@ -925,15 +947,14 @@ function drawBoss(b) {
 }
 
 // 敵の弾（火の玉）
+// 弾は数が多いので、重い「ぼかし（shadowBlur）」は使わず、半透明の円を重ねて光らせる
 function drawBullet(b) {
-  ctx.save();
-  ctx.shadowColor = '#ff5a3c'; ctx.shadowBlur = 12;
+  ctx.fillStyle = 'rgba(255,90,60,0.25)';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 1.9, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#ff6a4a';
   ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
-  ctx.shadowBlur = 0;
   ctx.fillStyle = '#ffe0c8';
   ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.45, 0, Math.PI * 2); ctx.fill();
-  ctx.restore();
 }
 
 // ボスの体力ゲージ
@@ -1119,6 +1140,11 @@ function drawText(text, x, y, size, color = '#fff', align = 'center') {
 }
 
 function draw() {
+  // 毎フレーム、拡大率（DPR倍）を設定し直す。
+  // iPhoneがキャンバスを作り直すとこの設定が消え、画面が左上に小さく表示されてしまうため
+  if (canvas.width !== Math.round(W * DPR)) resize();
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.globalAlpha = 1;
   drawBackground();
 
   const inGame = state === 'play' || state === 'pause';
