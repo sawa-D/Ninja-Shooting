@@ -24,7 +24,13 @@
     -webkit-user-select: none; user-select: none;
     -webkit-touch-callout: none;
   }
-  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; }
+  /* 画面いっぱいに固定。実際の大きさはJavaScriptで測ってから描く */
+  canvas {
+    display: block;
+    position: fixed; left: 0; top: 0;
+    width: 100%; height: 100%;
+    touch-action: none;           /* 素早い連続タップをダブルタップ扱いにさせない */
+  }
 </style>
 </head>
 <body>
@@ -43,16 +49,27 @@ const FONT = '"Hiragino Mincho ProN", "Yu Mincho", serif';   // 和風に見え�
 // ---------- 画面サイズ ----------
 let W = 0, H = 0;          // 画面の幅と高さ（CSSピクセル）
 let safeTop = 0;           // iPhoneのノッチ分の余白
+// キャンバスが「実際に画面に表示されている大きさ」を測って、それに合わせて描く。
+// （描く位置とタップを判定する位置を必ず一致させるため）
 function resize() {
   const dpr = window.devicePixelRatio || 1;   // 高解像度画面でもくっきり描く
-  W = window.innerWidth;
-  H = window.innerHeight;
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
+  const rect = canvas.getBoundingClientRect();
+  if (rect.width === W && rect.height === H) return;   // 変わっていなければ何もしない
+  W = rect.width;
+  H = rect.height;
+  canvas.width = Math.round(W * dpr);
+  canvas.height = Math.round(H * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 window.addEventListener('resize', resize);
 resize();
+setInterval(resize, 500);   // iPhoneは起動直後に画面の大きさが変わることがあるので、念のため見張る
+
+// タップした位置を、キャンバスの中での座標に直す
+function toCanvas(e) {
+  const rect = canvas.getBoundingClientRect();
+  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+}
 // ノッチの高さ（env(safe-area-inset-top)）を数値で読むための小技
 const probe = document.createElement('div');
 probe.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top);visibility:hidden';
@@ -266,9 +283,10 @@ function volumeRow(row) {
 function backButton() {
   return { x: W / 2 - 100, y: H * 0.72, w: 200, h: 56 };
 }
-// 点(x, y)がボタンの四角の中にあるか
-function inside(x, y, b) {
-  return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
+// 点(x, y)がボタンの四角の中にあるか。
+// 指は思ったより少しずれて触れるので、見た目より pad ピクセル広めに反応させる
+function inside(x, y, b, pad = 10) {
+  return x >= b.x - pad && x <= b.x + b.w + pad && y >= b.y - pad && y <= b.y + b.h + pad;
 }
 
 // ---------- ポーズ・あきらめる・音量 ----------
@@ -314,14 +332,21 @@ function setVolume(kind, level) {
 // 音量画面でのタップ処理
 function tapVolumeScreen(x, y) {
   if (inside(x, y, backButton())) { closeVolume(); return; }
-  ['se', 'bgm'].forEach((kind, row) => {
+  const kinds = ['se', 'bgm'];
+  for (let row = 0; row < 2; row++) {
+    const kind = kinds[row];
     const r = volumeRow(row);
-    if (inside(x, y, r.minus)) setVolume(kind, volume[kind] - 1);
-    if (inside(x, y, r.plus))  setVolume(kind, volume[kind] + 1);
-    r.segments.forEach((s, i) => {
-      if (inside(x, y, s)) setVolume(kind, i + 1);   // バーの目盛りを直接タップしてもOK
-    });
-  });
+    if (inside(x, y, r.minus)) { setVolume(kind, volume[kind] - 1); return; }
+    if (inside(x, y, r.plus))  { setVolume(kind, volume[kind] + 1); return; }
+    for (let i = 0; i < 10; i++) {
+      // 目盛り同士は隣り合っているので、横方向は広げず縦だけ広げる
+      const s = r.segments[i];
+      if (inside(x, y, { x: s.x + 10, y: s.y, w: s.w - 20, h: s.h })) {
+        setVolume(kind, i + 1);   // バーの目盛りを直接タップしてもOK
+        return;
+      }
+    }
+  }
 }
 
 // ホーム画面に戻ったり電話が来たりしたら、自動で一時停止する
@@ -337,7 +362,7 @@ let lastTouch = null;
 canvas.addEventListener('pointerdown', (e) => {
   initAudio();
   if (audio && audio.state === 'suspended') audio.resume();
-  const x = e.clientX, y = e.clientY;
+  const { x, y } = toCanvas(e);
 
   if (state === 'play') {
     if (inside(x, y, menuButton())) { pause(); return; }   // メニューボタン → 一時停止
@@ -358,11 +383,12 @@ canvas.addEventListener('pointerdown', (e) => {
 canvas.addEventListener('pointermove', (e) => {
   if (!lastTouch || state !== 'play') return;
   const speed = 1.3;   // 指の動きに対する倍率
-  player.x += (e.clientX - lastTouch.x) * speed;
-  player.y += (e.clientY - lastTouch.y) * speed;
+  const p = toCanvas(e);
+  player.x += (p.x - lastTouch.x) * speed;
+  player.y += (p.y - lastTouch.y) * speed;
   player.x = Math.max(player.r, Math.min(W - player.r, player.x));
   player.y = Math.max(safeTop + 60, Math.min(H - player.r - 10, player.y));
-  lastTouch = { x: e.clientX, y: e.clientY };
+  lastTouch = p;
 });
 const endTouch = () => { lastTouch = null; };
 canvas.addEventListener('pointerup', endTouch);
