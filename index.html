@@ -57,9 +57,26 @@ resize();
 const probe = document.createElement('div');
 probe.style.cssText = 'position:fixed;top:0;height:env(safe-area-inset-top);visibility:hidden';
 document.body.appendChild(probe);
-function readSafeTop() { safeTop = probe.offsetHeight || 0; }
+// ホーム画面から起動したアプリかどうか
+function isStandalone() {
+  return window.navigator.standalone === true ||
+         window.matchMedia('(display-mode: standalone)').matches;
+}
+function readSafeTop() {
+  const v = probe.offsetHeight || 0;
+  if (v > 0) {
+    safeTop = v;
+  } else if (isStandalone()) {
+    // 起動直後は値が0になることがあるので、その間は時刻表示を避ける余白を仮に取る
+    safeTop = 54;
+  } else {
+    safeTop = 0;   // Safariで開いているときは、上はブラウザのバーなので余白不要
+  }
+}
 readSafeTop();
 window.addEventListener('resize', readSafeTop);
+window.addEventListener('orientationchange', readSafeTop);
+setInterval(readSafeTop, 500);   // 後から正しい値が入ったときに反映できるよう、0.5秒ごとに読み直す
 
 // ---------- ハイスコアの保存（iPhoneの中に残る） ----------
 function loadBest() {
