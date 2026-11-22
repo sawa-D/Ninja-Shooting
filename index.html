@@ -290,6 +290,9 @@ const SEASONS = [
     sky: ['#0b1530', '#3a4a6b'], moon: '#eef6ff', mountain: '#c9d3e6', particle: 'snow',    color: '#e8f2ff' },
 ];
 let season = 0;              // 今の季節（0:春 1:夏 2:秋 3:冬）
+let year = 1;                // 何年目か（冬のボスを倒して春に戻ると1年進む）
+const KANJI_NUM = ['〇', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+function yearLabel(y) { return (KANJI_NUM[y] || y) + '年目'; }
 const SHIELD_RECHARGE = 12;  // 春：桜の盾が復活するまでの秒数
 const FIREFLY_NEED = 5;      // 夏：命が回復するのに必要な蛍の数
 let fireflies = [];          // 夏：集める蛍
@@ -297,6 +300,8 @@ let fireflyTimer = 0, fireflyCount = 0;
 let wind = 0, windTarget = 0, windTimer = 0;   // 秋：風の強さ（＋は右向き、－は左向き）
 
 function setSeason(i, announce) {
+  const newYear = i >= SEASONS.length;   // 冬→春に戻った
+  if (newYear) year++;
   season = i % SEASONS.length;
   bgCache = null;              // 背景を描き直す
   resetAmbient();              // 背景の粒（花びら・蛍・紅葉・雪）を入れ替える
@@ -305,7 +310,11 @@ function setSeason(i, announce) {
   if (player) { player.shield = (season === 0); player.shieldTimer = 0; }
   if (announce) {
     const sz = SEASONS[season];
-    showBanner({ text: `～ ${sz.name} ～`, sub: sz.rule, t: 3, color: sz.color });
+    const title = year >= 2 ? `～ ${yearLabel(year)}の${sz.name} ～` : `～ ${sz.name} ～`;
+    showBanner({ text: title, sub: sz.rule, t: 3, color: sz.color });
+    if (newYear) {
+      showBanner({ text: '大鬼の怒り 増す', sub: 'これより先、大鬼の攻撃が激しくなる', t: 2.5, color: '#ff5a64' });
+    }
   }
 }
 
@@ -354,7 +363,8 @@ function resetGame() {
   bossCount = 0;
   banner = null;
   bannerQueue = [];
-  setSeason(0, true);   // 春から始まる
+  year = 1;
+  setSeason(0, true);   // 1年目の春から始まる
 }
 
 // ---------- ボタンの位置と大きさ ----------
@@ -728,7 +738,7 @@ function update(dt) {
   // --- ボスと敵の弾 ---
   if (boss) updateBoss(dt);
   for (const b of bullets) { b.x += (b.vx * slow + wind) * dt; b.y += b.vy * slow * dt; }   // 冬は遅く、秋は風で流される
-  bullets = bullets.filter(b => b.x > -20 && b.x < W + 20 && b.y > -20 && b.y < H + 20);
+  bullets = bullets.filter(b => b.x > -20 && b.x < W + 20 && b.y > -150 && b.y < H + 20);   // 上は「火の雨」が待機できるよう広め
 
   // --- 中央の大きな文字 ---
   if (banner) { banner.t -= dt; if (banner.t <= 0) banner = bannerQueue.shift() || null; }
@@ -885,12 +895,14 @@ function startBoss() {
     x: W / 2, y: -80, r: 52,
     hp, maxHp: hp,
     lv: bossCount,
+    year,               // 何年目のボスか（2年目以降は攻撃が激しい）
     t: 0, flash: 0,
     phase: 'enter',     // 'enter'（登場中） / 'fight'（戦闘中） / 'dying'（倒れる演出）
     attackTimer: 1.5,
     spiralTimer: 0, spiralAngle: 0,
   };
-  showBanner({ text: '大鬼 襲来', sub: '― 手裏剣で討ち取れ ―', t: 2.5, color: '#ff5a64' });
+  showBanner({ text: year >= 2 ? `大鬼 襲来 ・ ${yearLabel(year)}` : '大鬼 襲来',
+               sub: '― 手裏剣で討ち取れ ―', t: 2.5, color: '#ff5a64' });
   playBgm('boss');
   drum(0.7); setTimeout(() => drum(0.7), 250);
 }
@@ -921,23 +933,39 @@ function updateBoss(dt) {
   b.x = W / 2 + Math.sin(b.t * 0.7) * (W / 2 - b.r - 16);
   b.y = homeY + Math.sin(b.t * 1.6) * 18;
   const angry = b.hp < b.maxHp / 2;   // 体力が半分を切ると怒って攻撃が激しくなる
-  const speed = (150 + 20 * (b.lv - 1)) * (angry ? 1.2 : 1);
+
+  // 年ごとの激しさ（1年目は 0、2年目は 1、3年目は 2 …）。上限をつけて、よけられないほどにはしない
+  const fierce = Math.min(b.year - 1, 3);
+  const speed = Math.min(380, (150 + 20 * (b.lv - 1)) * (angry ? 1.2 : 1) * (1 + 0.15 * fierce));
 
   b.attackTimer -= dt;
   if (b.attackTimer <= 0) {
-    const pattern = Math.floor(Math.random() * 3);   // 3種類の攻撃からランダムに選ぶ（0・1・2）
-    if (pattern === 0) fanShot(b, angry ? 7 : 5, 0.22, speed);        // 扇形にばらまく
-    if (pattern === 1) ringShot(b, angry ? 18 : 12, speed * 0.85);    // 全方向に輪っか
-    if (pattern === 2) fanShot(b, 3, 0.08, speed * 1.3);              // 狙い撃ち（速い）
-    b.attackTimer = (angry ? 1.0 : 1.5) / (1 + 0.15 * (b.lv - 1));
+    // 2年目からは「火の雨」が加わり、4種類からランダムに選ぶ
+    const kinds = fierce > 0 ? 4 : 3;
+    const pattern = Math.floor(Math.random() * kinds);
+    if (pattern === 0) fanShot(b, (angry ? 7 : 5) + 2 * fierce, 0.2, speed);          // 扇形にばらまく
+    if (pattern === 1) ringShot(b, (angry ? 18 : 12) + 6 * fierce, speed * 0.85);     // 全方向に輪っか
+    if (pattern === 2) {                                                              // 狙い撃ち（速い）
+      fanShot(b, 3, 0.08, speed * 1.3);
+      // 2年目からは間をおいて2回・3回と連続で狙ってくる
+      for (let i = 1; i <= fierce && i <= 2; i++) {
+        setTimeout(() => { if (boss === b && b.phase === 'fight' && state === 'play') fanShot(b, 3, 0.08, speed * 1.3); }, i * 250);
+      }
+    }
+    if (pattern === 3) rainShot(8 + 4 * fierce, speed * 0.8);                         // 火の雨
+    const interval = (angry ? 1.0 : 1.5) / (1 + 0.15 * (b.lv - 1)) / (1 + 0.3 * fierce);
+    b.attackTimer = Math.max(0.45, interval);
   }
-  // 怒り状態：渦巻き状に弾を撃ち続ける
-  if (angry) {
+  // 渦巻き：1年目は怒り状態のときだけ。2年目からは最初から撃ち、怒ると2本・3本の渦になる
+  if (angry || fierce > 0) {
     b.spiralTimer -= dt;
     if (b.spiralTimer <= 0) {
-      b.spiralTimer = 0.16;
+      b.spiralTimer = 0.16 / (1 + 0.25 * fierce);
       b.spiralAngle += 0.5;
-      addBullet(b.x, b.y, b.spiralAngle, speed * 0.7);
+      const arms = angry ? 1 + Math.min(fierce, 2) : 1;   // 渦の腕の数
+      for (let i = 0; i < arms; i++) {
+        addBullet(b.x, b.y, b.spiralAngle + i * Math.PI * 2 / arms, speed * 0.7);
+      }
     }
   }
 }
@@ -951,6 +979,15 @@ function fanShot(b, n, spread, speed) {
   const aim = Math.atan2(player.y - b.y, player.x - b.x);
   for (let i = 0; i < n; i++) addBullet(b.x, b.y, aim + (i - (n - 1) / 2) * spread, speed);
   pluck(0, 0.06, 0.2);
+}
+// 火の雨：画面の上から、ばらばらの位置に n 発降らせる（2年目から）
+function rainShot(n, speed) {
+  for (let i = 0; i < n; i++) {
+    const x = 20 + Math.random() * (W - 40);
+    const y = safeTop + 40 - Math.random() * 120;   // 少しずつずれて降ってくる
+    bullets.push({ x, y, r: 7, vx: (Math.random() - 0.5) * 30, vy: speed * (0.7 + Math.random() * 0.3) });
+  }
+  drum(0.3);
 }
 // 全方向に n 発
 function ringShot(b, n, speed) {
@@ -1118,7 +1155,7 @@ function drawPlayer() {
 
 // 季節と、その季節の状態を表す文字
 function seasonStatus() {
-  const name = SEASONS[season].name;
+  const name = (year >= 2 ? yearLabel(year) + '・' : '') + SEASONS[season].name;
   if (season === 0) return `${name}　桜の盾 ${player.shield ? '●' : 'あと' + Math.ceil(player.shieldTimer) + '秒'}`;
   if (season === 1) return `${name}　蛍 ${fireflyCount}/${FIREFLY_NEED}`;
   if (season === 2) return `${name}　風 ${wind > 0 ? '→' : '←'}`;
