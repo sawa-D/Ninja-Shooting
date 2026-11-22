@@ -234,6 +234,7 @@ function prefetchBgm() {
 
 // ---------- ゲームの状態 ----------
 let state = 'title';       // 'title'（タイトル） / 'play'（プレイ中） / 'pause'（一時停止） / 'over'（ゲームオーバー）
+let overAt = 0;            // ゲームオーバーになった時刻（直後の誤タップを防ぐ）
 let score = 0;
 let best = loadBest();
 let time = 0;              // プレイ開始からの秒数
@@ -489,8 +490,16 @@ canvas.addEventListener('pointerdown', (e) => {
     if (inside(x, y, volumeButton())) { openVolume(); return; }    // 音量 → 音量画面へ
     if (inside(x, y, giveUpButton())) { giveUp(); return; }        // あきらめる → タイトルへ
     resume();                                                      // それ以外の場所 → 再開
+  } else if (state === 'over') {
+    // ゲームオーバー画面 → タイトル画面へ戻る
+    // （やられた直後は指が画面に触れたままのことが多いので、1秒たつまではタップを受け付けない）
+    if (performance.now() - overAt > 1000) {
+      state = 'title';
+      pluck(5, 0.1);
+    }
+    return;
   } else {
-    // タイトル画面・ゲームオーバー画面 → ゲーム開始
+    // タイトル画面 → ゲーム開始
     resetGame();
     state = 'play';
     drum();
@@ -860,6 +869,7 @@ function damagePlayer() {
   drum(0.6);
   if (player.lives <= 0) {
     state = 'over';
+    overAt = performance.now();   // ゲームオーバーになった時刻
     stopBgm();
     if (score > best) { best = score; saveBest(best); }
   }
@@ -1461,7 +1471,7 @@ function draw() {
     drawText('無念…', W / 2, H * 0.38, 48, '#ff8fa8');
     drawText(`得点 ${score}`, W / 2, H * 0.5, 28, '#fff');
     drawText(`最高得点 ${best}`, W / 2, H * 0.5 + 40, 20, '#ffcad6');
-    drawText('タップでもう一度', W / 2, H * 0.72, 18, '#fff3c4');
+    if (performance.now() - overAt > 1000) drawText('タップでタイトルへ', W / 2, H * 0.72, 18, '#fff3c4');
   }
 }
 
