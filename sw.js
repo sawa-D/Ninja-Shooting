@@ -1,6 +1,6 @@
 // Service Worker：一度開いたらファイルを保存して、オフラインでも遊べるようにする
 // ゲームを更新したら、下の番号（v1 → v2）を変えるとiPhone側も新しい版に入れ替わる
-const CACHE = 'oni-taiji-v8';
+const CACHE = 'oni-taiji-v9';
 const FILES = [
   './',
   './index.html',

@@ -26,6 +26,8 @@
 - 連射の速さ：`shotTimer = 0.14;`（小さくすると速くなる）
 - 敵の出やすさ：`spawnTimer = Math.max(0.25, 0.9 - time / 100);`
 - 鬼の硬さ：`hp: 4`
-- 命の数：`lives: 3`
+- 命の数：`lives: 3`（上限は `MAX_LIVES = 5`）
+- 天狗の出やすさ：`TENGU_RATE = 0.04`
+- 最初のボスが出る得点：`BOSS_FIRST_SCORE = 1000`
 
 改造してGitHubに上げ直したら、`sw.js` の `oni-taiji-v1` を `v2` に変えると、iPhone側も新しい版に入れ替わります。
