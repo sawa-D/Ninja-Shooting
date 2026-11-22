@@ -202,6 +202,24 @@ function playBgm(name) {
   currentBgm.currentTime = 0;
   currentBgm.play().catch(() => {});
 }
+// iPhoneは「タップした瞬間」以外に新しい曲を鳴らし始められない。
+// そこでゲーム開始のタップのときに、全部の曲を無音で一瞬だけ再生して「解禁」しておく
+let bgmUnlocked = false;
+function unlockBgm() {
+  if (bgmUnlocked) return;
+  bgmUnlocked = true;
+  for (const name in bgmTracks) {
+    const el = bgmTracks[name];
+    if (el === currentBgm) continue;
+    el.muted = true;
+    el.play().then(() => {
+      el.pause();
+      el.currentTime = 0;
+      el.muted = false;
+    }).catch(() => { el.muted = false; });
+  }
+}
+
 // 一時停止・再開（続きから）
 function pauseBgm()  { if (currentBgm) currentBgm.pause(); }
 function resumeBgm() { if (currentBgm) currentBgm.play().catch(() => {}); }
@@ -220,6 +238,15 @@ let best = loadBest();
 let time = 0;              // プレイ開始からの秒数
 let player = null, shurikens = [], enemies = [], items = [], particles = [], petals = [];
 let spawnTimer = 0, shotTimer = 0;
+
+// ---------- ボス戦の設定 ----------
+const BOSS_FIRST_SCORE = 1000;   // この得点に達すると最初のボスが出る
+const BOSS_INTERVAL = 3000;      // ボスを倒してから、この得点を稼ぐと次のボスが出る
+let boss = null;                 // 今戦っているボス（いなければ null）
+let bullets = [];                // 敵の弾（ボスが撃つ火の玉）
+let nextBossScore = BOSS_FIRST_SCORE;
+let bossCount = 0;               // 何体目のボスか（倒すたびに強くなる）
+let banner = null;               // 画面中央に出る大きな文字（「大鬼 襲来」など）
 
 // 背景で舞う桜の花びら（ずっと表示）
 petals = [];
@@ -245,6 +272,11 @@ function resetGame() {
   time = 0;
   spawnTimer = 0;
   shotTimer = 0;
+  boss = null;
+  bullets = [];
+  nextBossScore = BOSS_FIRST_SCORE;
+  bossCount = 0;
+  banner = null;
 }
 
 // ---------- ボタンの位置と大きさ ----------
@@ -377,6 +409,7 @@ canvas.addEventListener('pointerdown', (e) => {
     state = 'play';
     drum();
     playBgm('stage');   // ゲーム開始でBGMスタート（iPhoneはタップの中でないと音を出せない）
+    unlockBgm();        // ボス戦の曲も後で流せるようにしておく
   }
   lastTouch = { x, y };
 });
@@ -464,11 +497,16 @@ function update(dt) {
   for (const s of shurikens) { s.x += s.vx * dt; s.y += s.vy * dt; s.rot += dt * 20; }
   shurikens = shurikens.filter(s => s.y > -20 && s.x > -20 && s.x < W + 20);
 
-  // --- 敵の出現 ---
-  spawnTimer -= dt;
-  if (spawnTimer <= 0) {
-    spawnEnemy();
-    spawnTimer = Math.max(0.25, 0.9 - time / 100);   // だんだん出現間隔が短くなる
+  // --- ボスの登場 ---
+  if (!boss && score >= nextBossScore) startBoss();
+
+  // --- 敵の出現（ボス戦中は雑魚は出てこない） ---
+  if (!boss) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      spawnEnemy();
+      spawnTimer = Math.max(0.25, 0.9 - time / 100);   // だんだん出現間隔が短くなる
+    }
   }
 
   // --- 敵の移動 ---
@@ -478,6 +516,14 @@ function update(dt) {
     if (e.type === 'hi') e.x = e.baseX + Math.sin(e.t * 3) * 40;
     if (e.flash > 0) e.flash -= dt;
   }
+
+  // --- ボスと敵の弾 ---
+  if (boss) updateBoss(dt);
+  for (const b of bullets) { b.x += b.vx * dt; b.y += b.vy * dt; }
+  bullets = bullets.filter(b => b.x > -20 && b.x < W + 20 && b.y > -20 && b.y < H + 20);
+
+  // --- 中央の大きな文字 ---
+  if (banner) { banner.t -= dt; if (banner.t <= 0) banner = null; }
 
   // --- 手裏剣と敵の当たり判定 ---
   for (const e of enemies) {
@@ -501,6 +547,24 @@ function update(dt) {
       }
     }
   }
+  // --- 手裏剣とボスの当たり判定（戦闘中だけダメージが入る） ---
+  if (boss && boss.phase === 'fight') {
+    for (const s of shurikens) {
+      if (!s.dead && hit(s, boss)) {
+        s.dead = true;
+        boss.hp--;
+        boss.flash = 0.06;
+        score += 5;
+        if (Math.random() < 0.3) burst(s.x, s.y, '#ffd27a', 3);
+        if (boss.hp <= 0) {
+          boss.phase = 'dying';   // 倒れる演出へ
+          boss.dieT = 1.6;
+          bullets = [];           // 残っている弾は消える
+          drum(0.7);
+        }
+      }
+    }
+  }
   shurikens = shurikens.filter(s => !s.dead);
   enemies = enemies.filter(e => e.hp > 0 && e.y < H + 40);
 
@@ -516,27 +580,130 @@ function update(dt) {
   }
   items = items.filter(it => !it.got && it.y < H + 20);
 
-  // --- 敵と自分の当たり判定 ---
+  // --- 自分がやられたかの判定（敵・敵の弾・ボスの体） ---
   if (player.invincible > 0) player.invincible -= dt;
   else {
-    for (const e of enemies) {
-      if (hit({ x: player.x, y: player.y, r: player.r * 0.6 }, e)) {
-        e.hp = 0;
-        player.lives--;
-        player.power = Math.max(1, player.power - 1);
-        player.invincible = 2;   // 2秒間は無敵
-        burst(player.x, player.y, '#ffffff', 25);
-        drum(0.6);
-        if (player.lives <= 0) {
-          state = 'over';
-          stopBgm();
-          if (score > best) { best = score; saveBest(best); }
-        }
-        break;
-      }
-    }
+    const me = { x: player.x, y: player.y, r: player.r * 0.6 };   // 当たり判定は見た目より小さめ
+    const enemy = enemies.find(e => hit(me, e));
+    const bullet = bullets.find(b => hit(me, b));
+    const bossBody = boss && boss.phase === 'fight' && hit(me, boss);
+    if (enemy) enemy.hp = 0;
+    if (enemy || bullet || bossBody) damagePlayer();
     enemies = enemies.filter(e => e.hp > 0);   // ぶつかった敵を消す
   }
+}
+
+// 自分がダメージを受けたとき
+function damagePlayer() {
+  player.lives--;
+  player.power = Math.max(1, player.power - 1);
+  player.invincible = 2;   // 2秒間は無敵
+  bullets = [];            // 立て直せるよう、画面の弾を消す
+  burst(player.x, player.y, '#ffffff', 25);
+  drum(0.6);
+  if (player.lives <= 0) {
+    state = 'over';
+    stopBgm();
+    if (score > best) { best = score; saveBest(best); }
+  }
+}
+
+// =====================================================
+//  ボス戦：大鬼
+// =====================================================
+function startBoss() {
+  bossCount++;
+  const hp = 150 + 100 * (bossCount - 1);   // 2体目以降は硬くなる
+  boss = {
+    x: W / 2, y: -80, r: 52,
+    hp, maxHp: hp,
+    lv: bossCount,
+    t: 0, flash: 0,
+    phase: 'enter',     // 'enter'（登場中） / 'fight'（戦闘中） / 'dying'（倒れる演出）
+    attackTimer: 1.5, attackNo: 0,
+    spiralTimer: 0, spiralAngle: 0,
+  };
+  banner = { text: '大鬼 襲来', sub: '― 手裏剣で討ち取れ ―', t: 2.5, color: '#ff5a64' };
+  playBgm('boss');
+  drum(0.7); setTimeout(() => drum(0.7), 250);
+}
+
+function updateBoss(dt) {
+  const b = boss;
+  b.t += dt;
+  if (b.flash > 0) b.flash -= dt;
+  const homeY = safeTop + 150;   // ボスがとどまる高さ
+
+  // 登場：上からゆっくり降りてくる
+  if (b.phase === 'enter') {
+    b.y += 70 * dt;
+    if (b.y >= homeY) { b.y = homeY; b.phase = 'fight'; b.t = 0; }
+    return;
+  }
+  // 倒れる演出：あちこちで花びらがはじけて、最後に大爆発
+  if (b.phase === 'dying') {
+    b.dieT -= dt;
+    if (Math.random() < 0.5) {
+      burst(b.x + (Math.random() - 0.5) * b.r * 2, b.y + (Math.random() - 0.5) * b.r * 2, '#ff9eb8', 6);
+    }
+    if (b.dieT <= 0) defeatBoss();
+    return;
+  }
+
+  // 戦闘：左右にゆっくり動きながら攻撃
+  b.x = W / 2 + Math.sin(b.t * 0.7) * (W / 2 - b.r - 16);
+  b.y = homeY + Math.sin(b.t * 1.6) * 18;
+  const angry = b.hp < b.maxHp / 2;   // 体力が半分を切ると怒って攻撃が激しくなる
+  const speed = (150 + 20 * (b.lv - 1)) * (angry ? 1.2 : 1);
+
+  b.attackTimer -= dt;
+  if (b.attackTimer <= 0) {
+    const pattern = b.attackNo % 3;   // 3種類の攻撃を順番に使う
+    b.attackNo++;
+    if (pattern === 0) fanShot(b, angry ? 7 : 5, 0.22, speed);        // 扇形にばらまく
+    if (pattern === 1) ringShot(b, angry ? 18 : 12, speed * 0.85);    // 全方向に輪っか
+    if (pattern === 2) fanShot(b, 3, 0.08, speed * 1.3);              // 狙い撃ち（速い）
+    b.attackTimer = (angry ? 1.0 : 1.5) / (1 + 0.15 * (b.lv - 1));
+  }
+  // 怒り状態：渦巻き状に弾を撃ち続ける
+  if (angry) {
+    b.spiralTimer -= dt;
+    if (b.spiralTimer <= 0) {
+      b.spiralTimer = 0.16;
+      b.spiralAngle += 0.5;
+      addBullet(b.x, b.y, b.spiralAngle, speed * 0.7);
+    }
+  }
+}
+
+// 弾を1つ出す（angle の方向へ speed の速さで飛ぶ）
+function addBullet(x, y, angle, speed) {
+  bullets.push({ x, y, r: 7, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed });
+}
+// 自分を狙って、扇形に n 発
+function fanShot(b, n, spread, speed) {
+  const aim = Math.atan2(player.y - b.y, player.x - b.x);
+  for (let i = 0; i < n; i++) addBullet(b.x, b.y, aim + (i - (n - 1) / 2) * spread, speed);
+  pluck(0, 0.06, 0.2);
+}
+// 全方向に n 発
+function ringShot(b, n, speed) {
+  const offset = Math.random() * Math.PI * 2;
+  for (let i = 0; i < n; i++) addBullet(b.x, b.y, offset + i * Math.PI * 2 / n, speed);
+  drum(0.25);
+}
+
+function defeatBoss() {
+  const bonus = 3000 * boss.lv;
+  score += bonus;
+  for (let i = 0; i < 4; i++) burst(boss.x, boss.y, i % 2 ? '#ff9eb8' : '#fff3c4', 25);
+  items.push({ x: boss.x - 30, y: boss.y, r: 14, vy: 80 });   // ごほうびの巻物
+  items.push({ x: boss.x + 30, y: boss.y, r: 14, vy: 80 });
+  banner = { text: '大鬼 討伐！', sub: `ボーナス +${bonus}`, t: 2.5, color: '#fff3c4' };
+  [0, 5, 7, 12].forEach((n, i) => setTimeout(() => pluck(n, 0.15, 0.5), i * 120));   // 勝利の音
+  boss = null;
+  nextBossScore = score + BOSS_INTERVAL;
+  playBgm('stage');
 }
 
 // =====================================================
@@ -636,15 +803,15 @@ function drawOni(e) {
   ctx.save();
   ctx.translate(e.x, e.y);
   const r = e.r;
-  // 角
-  ctx.fillStyle = '#f4e9c8';
+  // 角（ボスは金色）
+  ctx.fillStyle = e.horn || '#f4e9c8';
   ctx.beginPath(); ctx.moveTo(-r * 0.7, -r * 0.5); ctx.lineTo(-r * 0.45, -r * 1.35); ctx.lineTo(-r * 0.2, -r * 0.7); ctx.fill();
   ctx.beginPath(); ctx.moveTo(r * 0.7, -r * 0.5); ctx.lineTo(r * 0.45, -r * 1.35); ctx.lineTo(r * 0.2, -r * 0.7); ctx.fill();
   // 顔
-  ctx.fillStyle = e.flash > 0 ? '#fff' : '#d9333f';
+  ctx.fillStyle = e.flash > 0 ? '#fff' : (e.color || '#d9333f');
   ctx.beginPath(); ctx.arc(0, 0, r, 0, Math.PI * 2); ctx.fill();
   // 眉と目
-  ctx.strokeStyle = '#2a0a0a'; ctx.lineWidth = 3;
+  ctx.strokeStyle = '#2a0a0a'; ctx.lineWidth = Math.max(3, r * 0.1);
   ctx.beginPath(); ctx.moveTo(-r * 0.6, -r * 0.35); ctx.lineTo(-r * 0.15, -r * 0.15);
   ctx.moveTo(r * 0.6, -r * 0.35); ctx.lineTo(r * 0.15, -r * 0.15); ctx.stroke();
   ctx.fillStyle = '#ffe14d';
@@ -656,6 +823,59 @@ function drawOni(e) {
   ctx.beginPath(); ctx.moveTo(-r * 0.4, r * 0.35); ctx.lineTo(-r * 0.28, r * 0.6); ctx.lineTo(-r * 0.16, r * 0.35);
   ctx.moveTo(r * 0.4, r * 0.35); ctx.lineTo(r * 0.28, r * 0.6); ctx.lineTo(r * 0.16, r * 0.35); ctx.fill();
   ctx.restore();
+}
+
+// ボス：大鬼（普通の鬼を大きく、色を濃くして、赤いオーラをまとわせる）
+function drawBoss(b) {
+  const angry = b.phase === 'fight' && b.hp < b.maxHp / 2;
+  ctx.save();
+  ctx.shadowColor = angry ? '#ff2a2a' : '#ff6a3c';
+  ctx.shadowBlur = 30 + Math.sin(time * (angry ? 12 : 4)) * 15;   // 脈打つオーラ
+  ctx.fillStyle = 'rgba(255,60,40,0.25)';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 1.15, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  // 倒れる演出中は震える
+  const shake = b.phase === 'dying' ? (Math.random() - 0.5) * 8 : 0;
+  drawOni({ x: b.x + shake, y: b.y, r: b.r, flash: b.flash,
+            color: angry ? '#b0182a' : '#7e1f3a', horn: '#e6c25a' });
+}
+
+// 敵の弾（火の玉）
+function drawBullet(b) {
+  ctx.save();
+  ctx.shadowColor = '#ff5a3c'; ctx.shadowBlur = 12;
+  ctx.fillStyle = '#ff6a4a';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#ffe0c8';
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r * 0.45, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+// ボスの体力ゲージ
+function drawBossHp() {
+  const y = safeTop + 62;
+  const x = 16, w = W - 32, h = 8;
+  drawText('大鬼', x, y, 14, '#ffb0b8', 'left');
+  const bx = x + 40, bw = w - 40;
+  roundRect(bx, y - h / 2, bw, h, 4);
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fill();
+  const ratio = Math.max(0, boss.hp / boss.maxHp);
+  if (ratio > 0) {
+    roundRect(bx, y - h / 2, bw * ratio, h, 4);
+    ctx.fillStyle = ratio < 0.5 ? '#ff4a5a' : '#ff9eb8'; ctx.fill();
+  }
+}
+
+// 画面中央の大きな文字（だんだん消える）
+function drawBanner() {
+  const a = Math.min(1, banner.t / 0.5);
+  ctx.globalAlpha = a;
+  ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  ctx.fillRect(0, H * 0.42 - 50, W, 100);
+  drawText(banner.text, W / 2, H * 0.42 - 10, 40, banner.color);
+  drawText(banner.sub, W / 2, H * 0.42 + 30, 16, '#fff');
+  ctx.globalAlpha = 1;
 }
 
 // 巻物（パワーアップ）
@@ -765,8 +985,10 @@ function draw() {
   if (inGame || state === 'over') {
     for (const it of items) drawItem(it);
     for (const e of enemies) e.type === 'oni' ? drawOni(e) : drawHitodama(e);
+    if (boss) drawBoss(boss);
     for (const s of shurikens) drawShuriken(s.x, s.y, s.rot);
     if (inGame) drawPlayer();
+    for (const b of bullets) drawBullet(b);   // 弾は見落とさないよう一番手前に
   }
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life);
@@ -781,6 +1003,8 @@ function draw() {
     drawText(`得点 ${score}`, 68, top, 20, '#fff', 'left');
     drawText('命 ' + '●'.repeat(player.lives) + '○'.repeat(Math.max(0, 3 - player.lives)),
              W - 16, top, 18, '#ff8fa8', 'right');
+    if (boss) drawBossHp();
+    if (banner) drawBanner();
   }
 
   if (state === 'pause') {
