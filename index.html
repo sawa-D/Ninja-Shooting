@@ -88,10 +88,38 @@ function saveBest(v) {
 
 // ---------- 効果音（Web Audio で音を合成。和音階＝都節音階） ----------
 let audio = null;
+let sfxGain = null;         // 効果音全体の音量つまみ
 const SCALE = [0, 1, 5, 7, 8, 12, 13, 17];   // 都節音階（ミ ファ ラ シ ド…）の半音差
+
+// ---------- 音量設定（0〜10。0は消音）。iPhoneの中に保存される ----------
+const volume = loadVolume();
+function loadVolume() {
+  try {
+    const v = JSON.parse(localStorage.getItem('oni-volume'));
+    if (v && v.se >= 0 && v.bgm >= 0) return v;
+  } catch (e) {}
+  return { se: 8, bgm: 6 };   // はじめての起動時の音量
+}
+function saveVolume() {
+  try { localStorage.setItem('oni-volume', JSON.stringify(volume)); } catch (e) {}
+}
+// 段階（0〜10）→ 実際の音量。人の耳は小さい音の変化に敏感なので、2乗にして変化を自然にする
+function levelToGain(level, max) {
+  return Math.pow(level / 10, 2) * max;
+}
+function applyVolume() {
+  if (sfxGain) sfxGain.gain.value = levelToGain(volume.se, 1.5);
+  if (bgmGain) bgmGain.gain.value = levelToGain(volume.bgm, 1.0);
+}
+
 function initAudio() {
   if (audio) return;
-  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {}
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    sfxGain = audio.createGain();
+    sfxGain.connect(audio.destination);
+    applyVolume();
+  } catch (e) {}
 }
 // 琴っぽい「ポン」という音
 function pluck(semitone, vol = 0.15, len = 0.35) {
@@ -103,7 +131,7 @@ function pluck(semitone, vol = 0.15, len = 0.35) {
   osc.frequency.value = 330 * Math.pow(2, semitone / 12);
   gain.gain.setValueAtTime(vol, t);
   gain.gain.exponentialRampToValueAtTime(0.001, t + len);
-  osc.connect(gain).connect(audio.destination);
+  osc.connect(gain).connect(sfxGain);
   osc.start(t); osc.stop(t + len);
 }
 // 太鼓っぽい「ドン」という音
@@ -117,7 +145,7 @@ function drum(vol = 0.4) {
   osc.frequency.exponentialRampToValueAtTime(45, t + 0.3);
   gain.gain.setValueAtTime(vol, t);
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
-  osc.connect(gain).connect(audio.destination);
+  osc.connect(gain).connect(sfxGain);
   osc.start(t); osc.stop(t + 0.4);
 }
 
@@ -127,7 +155,6 @@ const BGM_FILES = {
   stage: 'bgm/stage.mp3',   // ゲーム中（bgm1）
   boss:  'bgm/boss.mp3',    // ボス戦（bgm2）※後で使う
 };
-const BGM_VOLUME = 0.45;    // BGMの音量（0〜1）。効果音が聞こえるよう少し控えめ
 const bgmTracks = {};       // 読み込んだ曲（<audio>要素）
 let bgmGain = null;         // 音量つまみ（iPhoneは<audio>の音量を直接変えられないためWeb Audio経由）
 let currentBgm = null;      // 今流れている曲
@@ -143,8 +170,8 @@ for (const name in BGM_FILES) {
 function connectBgm() {
   if (bgmGain || !audio) return;
   bgmGain = audio.createGain();
-  bgmGain.gain.value = BGM_VOLUME;
   bgmGain.connect(audio.destination);
+  applyVolume();
   for (const name in bgmTracks) {
     try { audio.createMediaElementSource(bgmTracks[name]).connect(bgmGain); } catch (e) {}
   }
@@ -208,18 +235,48 @@ function resetGame() {
 function menuButton() {
   return { x: 12, y: safeTop + 8, w: 44, h: 44 };
 }
-// ポーズ中に出る「あきらめる」ボタン（画面の中央）
+// ポーズ中のメニュー：「音量」ボタンと「あきらめる」ボタン（画面の中央）
+function volumeButton() {
+  return { x: W / 2 - 100, y: H * 0.44, w: 200, h: 56 };
+}
 function giveUpButton() {
-  return { x: W / 2 - 100, y: H * 0.5, w: 200, h: 56 };
+  return { x: W / 2 - 100, y: H * 0.44 + 76, w: 200, h: 56 };
+}
+
+// 音量画面のレイアウト。row = 0（効果音）/ 1（BGM）
+// [－] ■■■■■■■■■■ [＋] の並び
+function volumeRow(row) {
+  const y = H * (row === 0 ? 0.36 : 0.54);       // 段階バーの上端
+  const btn = 44;                                  // －／＋ボタンの大きさ
+  const margin = 20;
+  const barX = margin + btn + 10;
+  const barW = W - barX * 2;
+  const segW = barW / 10;
+  const segments = [];
+  for (let i = 0; i < 10; i++) {
+    segments.push({ x: barX + i * segW, y, w: segW, h: btn });
+  }
+  return {
+    labelY: y - 22,
+    minus: { x: margin, y, w: btn, h: btn },
+    plus:  { x: W - margin - btn, y, w: btn, h: btn },
+    segments,
+  };
+}
+function backButton() {
+  return { x: W / 2 - 100, y: H * 0.72, w: 200, h: 56 };
 }
 // 点(x, y)がボタンの四角の中にあるか
 function inside(x, y, b) {
   return x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h;
 }
 
-// ---------- ポーズ・あきらめる ----------
+// ---------- ポーズ・あきらめる・音量 ----------
+let pauseView = 'menu';    // 一時停止中の画面：'menu'（メニュー） / 'volume'（音量調整）
+
 function pause() {
   state = 'pause';
+  pauseView = 'menu';
   lastTouch = null;
   pauseBgm();
   pluck(5, 0.1);
@@ -236,9 +293,42 @@ function giveUp() {
   drum(0.3);
 }
 
+// 音量画面を開く／閉じる。開いている間は、音量を確かめられるようBGMだけ流す
+function openVolume() {
+  pauseView = 'volume';
+  resumeBgm();
+  pluck(5, 0.1);
+}
+function closeVolume() {
+  pauseView = 'menu';
+  pauseBgm();
+  pluck(5, 0.1);
+}
+// 音量を変える（kind = 'se' か 'bgm'、level = 0〜10）
+function setVolume(kind, level) {
+  volume[kind] = Math.max(0, Math.min(10, level));
+  applyVolume();
+  saveVolume();
+  if (kind === 'se') pluck(12, 0.15);   // 効果音は変えた直後に試し鳴らし
+}
+// 音量画面でのタップ処理
+function tapVolumeScreen(x, y) {
+  if (inside(x, y, backButton())) { closeVolume(); return; }
+  ['se', 'bgm'].forEach((kind, row) => {
+    const r = volumeRow(row);
+    if (inside(x, y, r.minus)) setVolume(kind, volume[kind] - 1);
+    if (inside(x, y, r.plus))  setVolume(kind, volume[kind] + 1);
+    r.segments.forEach((s, i) => {
+      if (inside(x, y, s)) setVolume(kind, i + 1);   // バーの目盛りを直接タップしてもOK
+    });
+  });
+}
+
 // ホーム画面に戻ったり電話が来たりしたら、自動で一時停止する
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && state === 'play') pause();
+  if (!document.hidden) return;
+  if (state === 'play') pause();
+  else if (state === 'pause') pauseBgm();   // 音量画面でBGMを試聴中でも止める
 });
 
 // ---------- タッチ操作 ----------
@@ -252,8 +342,10 @@ canvas.addEventListener('pointerdown', (e) => {
   if (state === 'play') {
     if (inside(x, y, menuButton())) { pause(); return; }   // メニューボタン → 一時停止
   } else if (state === 'pause') {
-    if (inside(x, y, giveUpButton())) { giveUp(); return; } // あきらめる → タイトルへ
-    resume();                                               // それ以外の場所 → 再開
+    if (pauseView === 'volume') { tapVolumeScreen(x, y); return; } // 音量画面
+    if (inside(x, y, volumeButton())) { openVolume(); return; }    // 音量 → 音量画面へ
+    if (inside(x, y, giveUpButton())) { giveUp(); return; }        // あきらめる → タイトルへ
+    resume();                                                      // それ以外の場所 → 再開
   } else {
     // タイトル画面・ゲームオーバー画面 → ゲーム開始
     resetGame();
@@ -587,16 +679,47 @@ function drawMenuButton() {
   ctx.stroke();
 }
 
-// 「あきらめる」ボタン（朱色）
-function drawGiveUpButton() {
-  const b = giveUpButton();
+// 文字の入ったボタン（金色の縁取り）
+function drawButton(b, label, color, size = 22) {
   roundRect(b.x, b.y, b.w, b.h, 12);
-  ctx.fillStyle = '#c8323c';
+  ctx.fillStyle = color;
   ctx.fill();
   ctx.strokeStyle = '#c9a75a';
   ctx.lineWidth = 3;
   ctx.stroke();
-  drawText('あきらめる', W / 2, b.y + b.h / 2, 22, '#fff');
+  drawText(label, b.x + b.w / 2, b.y + b.h / 2, size, '#fff');
+}
+
+// 一時停止メニュー
+function drawPauseMenu() {
+  drawText('一時停止', W / 2, H * 0.32, 40, '#fff');
+  drawButton(volumeButton(), '音量', '#2f3a6b');      // 藍色
+  drawButton(giveUpButton(), 'あきらめる', '#c8323c'); // 朱色
+  drawText('ほかの場所をタップで再開', W / 2, giveUpButton().y + 100, 16, '#ddd');
+}
+
+// 音量画面
+function drawVolumeScreen() {
+  drawText('音量', W / 2, H * 0.2, 36, '#fff');
+  const rows = [
+    { kind: 'se',  label: '効果音', color: '#ff8fa8' },   // 桜色
+    { kind: 'bgm', label: 'BGM',    color: '#9fd8ff' },   // 水色
+  ];
+  rows.forEach((info, row) => {
+    const r = volumeRow(row);
+    const level = volume[info.kind];
+    drawText(info.label, r.minus.x, r.labelY, 18, '#fff', 'left');
+    drawText(level === 0 ? '消音' : `${level}`, r.plus.x + r.plus.w, r.labelY, 18, info.color, 'right');
+    drawButton(r.minus, '－', '#2f3a6b', 24);
+    drawButton(r.plus,  '＋', '#2f3a6b', 24);
+    // 10段階の目盛り：今の音量までを色付きで表示
+    r.segments.forEach((s, i) => {
+      roundRect(s.x + 2, s.y + 4, s.w - 4, s.h - 8, 4);
+      ctx.fillStyle = i < level ? info.color : 'rgba(255,255,255,0.15)';
+      ctx.fill();
+    });
+  });
+  drawButton(backButton(), '戻る', '#2f3a6b');
 }
 
 function drawText(text, x, y, size, color = '#fff', align = 'center') {
@@ -638,9 +761,8 @@ function draw() {
     // 画面全体を薄暗くする
     ctx.fillStyle = 'rgba(0,0,0,0.5)';
     ctx.fillRect(0, 0, W, H);
-    drawText('一時停止', W / 2, H * 0.36, 40, '#fff');
-    drawGiveUpButton();
-    drawText('ほかの場所をタップで再開', W / 2, H * 0.5 + 100, 16, '#ddd');
+    if (pauseView === 'volume') drawVolumeScreen();
+    else drawPauseMenu();
   }
 
   if (state === 'title') {
