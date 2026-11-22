@@ -1,0 +1,14 @@
+{
+  "name": "鬼退治 ～手裏剣忍法帖～",
+  "short_name": "鬼退治",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#14123a",
+  "theme_color": "#14123a",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
