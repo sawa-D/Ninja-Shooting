@@ -1,10 +1,11 @@
 // Service Worker：一度開いたらファイルを保存して、オフラインでも遊べるようにする
 // ゲームを更新したら、下の番号（v1 → v2）を変えるとiPhone側も新しい版に入れ替わる
-const CACHE = 'oni-taiji-v13';
+const CACHE = 'oni-taiji-v14';
 const FILES = [
   './',
   './index.html',
   './manifest.json',
+  './ranking.js',
   './icons/icon-180.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -28,6 +29,8 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   // BGM（音声ファイル）は少しずつ読み込む特殊な通信なので、ここでは扱わずブラウザに任せる
   if (e.request.url.includes('/bgm/') || e.request.headers.has('range')) return;
+  // ランキングの通信（Firebase）や、送信（POST）はキャッシュしない
+  if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
 
   e.respondWith(
     fetch(e.request)

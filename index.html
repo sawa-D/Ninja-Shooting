@@ -31,10 +31,59 @@
     width: 100%; height: 100%;
     touch-action: none;           /* 素早い連続タップをダブルタップ扱いにさせない */
   }
+  /* 名前入力の画面（ゲームの上に重ねて表示） */
+  #nameBox {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.6);
+    font-family: "Hiragino Mincho ProN", "Yu Mincho", serif;
+  }
+  #nameBox[hidden] { display: none; }
+  #nameBox .panel {
+    width: min(84vw, 320px);
+    padding: 22px 20px;
+    background: #1d1a3e;
+    border: 2px solid #c9a75a;
+    border-radius: 14px;
+    color: #fff; text-align: center;
+  }
+  #nameBox .ttl { font-size: 22px; font-weight: bold; margin: 0 0 6px; }
+  #nameBox .sub { font-size: 14px; color: #ddd; margin: 0 0 14px; }
+  #nameBox input {
+    width: 100%; box-sizing: border-box;
+    font-size: 18px;            /* 16px以上にしないとiPhoneで画面が拡大されてしまう */
+    padding: 10px; border-radius: 8px; border: 1px solid #c9a75a;
+    background: #fff; color: #222; text-align: center;
+    -webkit-user-select: text; user-select: text;
+  }
+  #nameBox .btns { display: flex; gap: 10px; margin-top: 14px; }
+  #nameBox button {
+    flex: 1; font-size: 17px; font-weight: bold; font-family: inherit;
+    padding: 12px 0; border-radius: 10px; border: 2px solid #c9a75a; color: #fff;
+  }
+  #nameOk   { background: #c8323c; }
+  #nameSkip { background: #2f3a6b; }
+  #nameBox .note { font-size: 12px; color: #aaa; margin: 12px 0 0; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+
+<!-- ランキングに登録する名前の入力画面 -->
+<div id="nameBox" hidden>
+  <div class="panel">
+    <p class="ttl" id="nameTitle">ランキングに登録</p>
+    <p class="sub">名前を入れてください（8文字まで）</p>
+    <input id="nameInput" type="text" maxlength="16" autocomplete="off" enterkeyhint="done">
+    <div class="btns">
+      <button id="nameOk">登録</button>
+      <button id="nameSkip">登録しない</button>
+    </div>
+    <p class="note" id="nameNote">名前は次から自動で使われます（タイトル画面で変更できます）</p>
+  </div>
+</div>
+
+<script src="ranking.js"></script>
 
 <script>
 // =====================================================
@@ -108,6 +157,83 @@ function loadBest() {
 }
 function saveBest(v) {
   try { localStorage.setItem('oni-best', String(v)); } catch (e) {}
+}
+
+// ---------- ランキング（ranking.js の機能を使う） ----------
+// ranking.status：'idle' / 'sending'（通信中） / 'done'（順位がわかった） / 'skip'（登録しなかった） / 'error'
+const ranking = { status: 'idle', myId: null, myRank: 0, total: 0, top: [], note: '' };
+
+function loadName() { try { return localStorage.getItem('oni-name') || ''; } catch (e) { return ''; } }
+function saveName(n) { try { localStorage.setItem('oni-name', n); } catch (e) {} }
+
+const nameBox = document.getElementById('nameBox');
+const nameInput = document.getElementById('nameInput');
+let nameMode = 'submit';   // 'submit'（ゲームオーバー後の登録） / 'change'（タイトル画面での名前変更）
+
+function openNameBox(mode) {
+  nameMode = mode;
+  document.getElementById('nameTitle').textContent = mode === 'change' ? '名前の変更' : 'ランキングに登録';
+  document.getElementById('nameSkip').textContent = mode === 'change' ? 'やめる' : '登録しない';
+  document.getElementById('nameNote').style.display = mode === 'change' ? 'none' : '';
+  nameInput.value = loadName();
+  nameBox.hidden = false;
+  setTimeout(() => nameInput.focus(), 50);
+}
+function closeNameBox() {
+  nameInput.blur();
+  nameBox.hidden = true;
+  overAt = performance.now();   // 閉じた直後のタップでタイトルに戻らないように
+}
+document.getElementById('nameOk').addEventListener('click', () => {
+  const name = cleanName(nameInput.value);
+  saveName(name);
+  closeNameBox();
+  if (nameMode === 'submit') reportScore(name);
+});
+document.getElementById('nameSkip').addEventListener('click', () => {
+  closeNameBox();
+  if (nameMode === 'submit') { ranking.status = 'skip'; ranking.note = '今回は登録しませんでした'; loadTopOnly(); }
+});
+nameInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('nameOk').click();
+});
+
+// ゲームオーバーになったら呼ばれる
+function onGameOver() {
+  ranking.status = 'idle'; ranking.myId = null; ranking.top = []; ranking.note = '';
+  if (!RANKING_ENABLED) return;
+  if (score <= 0) { ranking.status = 'skip'; ranking.note = '0点のため登録なし'; loadTopOnly(); return; }
+  const name = loadName();
+  if (name) reportScore(name);   // 名前があれば自動で登録
+  else openNameBox('submit');    // はじめてなら名前を聞く
+}
+
+// スコアを送り、順位と上位5件を受け取る
+async function reportScore(name) {
+  ranking.status = 'sending';
+  const myScore = score;
+  try {
+    ranking.myId = await submitScore(name, myScore, year);
+    const [top, mine] = await Promise.all([fetchTop(5), fetchMyRank(myScore)]);
+    ranking.top = top;
+    ranking.myRank = mine.rank;
+    ranking.total = mine.total;
+    ranking.myName = name;
+    ranking.myScore = myScore;
+    ranking.status = 'done';
+  } catch (e) {
+    console.log(e);
+    ranking.status = 'error';
+  }
+}
+// 登録せずに上位5件だけ見る
+async function loadTopOnly() {
+  try { ranking.top = await fetchTop(5); } catch (e) { console.log(e); }
+}
+
+// タイトル画面の「名前変更」ボタン
+function nameButton() {
+  return { x: W / 2 - 110, y: H * 0.92 - 18, w: 220, h: 36 };
 }
 
 // ---------- 効果音（Web Audio で音を合成。和音階＝都節音階） ----------
@@ -509,6 +635,7 @@ canvas.addEventListener('pointerdown', (e) => {
     }
     return;
   } else {
+    if (RANKING_ENABLED && inside(x, y, nameButton(), 0)) { openNameBox('change'); return; }   // 名前変更
     // タイトル画面 → ゲーム開始
     resetGame();
     state = 'play';
@@ -880,6 +1007,7 @@ function damagePlayer() {
   if (player.lives <= 0) {
     state = 'over';
     overAt = performance.now();   // ゲームオーバーになった時刻
+    onGameOver();                 // ランキングに登録
     stopBgm();
     if (score > best) { best = score; saveBest(best); }
   }
@@ -1151,6 +1279,41 @@ function drawPlayer() {
   ctx.moveTo(10, -17); ctx.quadraticCurveTo(18, -14 + wave, 24, -8 - wave); ctx.stroke();
   ctx.globalAlpha = 1;
   ctx.restore();
+}
+
+// ゲームオーバー画面のランキング表
+function drawRanking(top) {
+  const x = 24, w = W - 48, rowH = 30;
+  roundRect(x, top - 12, w, 74 + rowH * 6 + 4, 12);   // 6行（上位5件＋自分）が収まる高さ
+  ctx.fillStyle = 'rgba(20,18,58,0.75)'; ctx.fill();
+  ctx.strokeStyle = '#c9a75a'; ctx.lineWidth = 2; ctx.stroke();
+  drawText('― ランキング ―', W / 2, top + 10, 18, '#fff3c4');
+
+  // 自分の順位
+  let msg = '', color = '#fff';
+  if (ranking.status === 'sending') msg = '登録中…';
+  else if (ranking.status === 'done') { msg = `全${ranking.total}件中　${ranking.myRank}位！`; color = '#ffd27a'; }
+  else if (ranking.status === 'error') { msg = '通信できませんでした'; color = '#ff8fa8'; }
+  else if (ranking.status === 'skip') msg = ranking.note;
+  drawText(msg, W / 2, top + 40, 18, color);
+
+  // 上位5件
+  const rows = ranking.top.slice(0, 5);
+  rows.forEach((r, i) => {
+    const y = top + 74 + i * rowH;
+    const mine = r.id === ranking.myId;
+    const c = mine ? '#ffd27a' : '#eee';
+    drawText(`${i + 1}位`, x + 16, y, 16, c, 'left');
+    drawText(r.name, x + 70, y, 16, c, 'left');
+    drawText(String(r.score), x + w - 16, y, 16, c, 'right');
+  });
+  // 自分が6位以下なら、5位の下に自分の行を出す
+  if (ranking.status === 'done' && !rows.some(r => r.id === ranking.myId)) {
+    const y = top + 74 + 5 * rowH;
+    drawText(`${ranking.myRank}位`, x + 16, y, 16, '#ffd27a', 'left');
+    drawText(ranking.myName, x + 70, y, 16, '#ffd27a', 'left');
+    drawText(String(ranking.myScore), x + w - 16, y, 16, '#ffd27a', 'right');
+  }
 }
 
 // 季節と、その季節の状態を表す文字
@@ -1499,16 +1662,30 @@ function draw() {
     drawText('「力」手裏剣が増える　「命」回復', W / 2, H * 0.65 + 28, 16, '#ddd');
     drawText('「技」天狗が落とす。クナイが使える', W / 2, H * 0.65 + 54, 16, '#ddd');
     if (Math.floor(Date.now() / 600) % 2 === 0) drawText('― 画面をタップして開始 ―', W / 2, H * 0.8, 18, '#fff3c4');
-    if (best > 0) drawText(`最高得点 ${best}`, W / 2, H * 0.88, 16, '#ffcad6');
+    if (best > 0) drawText(`最高得点 ${best}`, W / 2, H * 0.86, 16, '#ffcad6');
+    if (RANKING_ENABLED) {
+      const nb = nameButton();
+      roundRect(nb.x, nb.y, nb.w, nb.h, 8);
+      ctx.strokeStyle = 'rgba(201,167,90,0.7)'; ctx.lineWidth = 1.5; ctx.stroke();
+      drawText(`名前：${loadName() || '未登録'}　［変更］`, W / 2, nb.y + nb.h / 2, 14, '#ddd');
+    }
   }
 
   if (state === 'over') {
     ctx.fillStyle = 'rgba(0,0,0,0.45)';
     ctx.fillRect(0, 0, W, H);
-    drawText('無念…', W / 2, H * 0.38, 48, '#ff8fa8');
-    drawText(`得点 ${score}`, W / 2, H * 0.5, 28, '#fff');
-    drawText(`最高得点 ${best}`, W / 2, H * 0.5 + 40, 20, '#ffcad6');
-    if (performance.now() - overAt > 1000) drawText('タップでタイトルへ', W / 2, H * 0.72, 18, '#fff3c4');
+    if (RANKING_ENABLED) {
+      drawText('無念…', W / 2, H * 0.2, 44, '#ff8fa8');
+      drawText(`得点 ${score}`, W / 2, H * 0.28, 26, '#fff');
+      drawText(`最高得点 ${best}`, W / 2, H * 0.28 + 32, 18, '#ffcad6');
+      drawRanking(H * 0.42);
+      if (performance.now() - overAt > 1000 && nameBox.hidden) drawText('タップでタイトルへ', W / 2, H * 0.88, 18, '#fff3c4');
+    } else {
+      drawText('無念…', W / 2, H * 0.38, 48, '#ff8fa8');
+      drawText(`得点 ${score}`, W / 2, H * 0.5, 28, '#fff');
+      drawText(`最高得点 ${best}`, W / 2, H * 0.5 + 40, 20, '#ffcad6');
+      if (performance.now() - overAt > 1000) drawText('タップでタイトルへ', W / 2, H * 0.72, 18, '#fff3c4');
+    }
   }
 }
 

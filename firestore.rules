@@ -1,0 +1,35 @@
+rules_version = '2';
+
+// Firestoreのセキュリティルール（データを守るための決まり）
+// Firebaseコンソール →「Firestore Database」→「ルール」タブに貼り付けて「公開」する
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ランキングのスコア（1件ずつ追加される）
+    match /scores/{scoreId} {
+      // 読むのは誰でもOK（ランキングを表示するため）
+      allow read: if true;
+
+      // 追加は、中身が正しい形のときだけOK
+      allow create: if request.resource.data.keys().hasOnly(['name', 'score', 'year', 'createdAt'])
+                    && request.resource.data.name is string
+                    && request.resource.data.name.size() >= 1
+                    && request.resource.data.name.size() <= 16
+                    && request.resource.data.score is int
+                    && request.resource.data.score > 0
+                    && request.resource.data.score <= 10000000      // ありえない点数ははじく
+                    && request.resource.data.year is int
+                    && request.resource.data.year >= 1
+                    && request.resource.data.year <= 100
+                    && request.resource.data.createdAt == request.time;  // 時刻はサーバーが付けたものだけ
+
+      // 書き換え・削除は誰もできない（他の人の記録を消されないように）
+      allow update, delete: if false;
+    }
+
+    // それ以外の場所は、読むのも書くのも禁止
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
